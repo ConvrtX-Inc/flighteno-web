@@ -1,0 +1,308 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('flighteno:server');
+var http = require('http');
+
+const MongoClient =   require('mongodb').MongoClient;
+const objectId    =   require('mongodb').ObjectId;
+var conn          =   require("../dataBaseConnection/connection");
+var helper        =   require('../helpers/common_helpers');
+const axios = require('axios').default;
+
+const { DH_UNABLE_TO_CHECK_GENERATOR } = require('constants');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+
+ var server = http.createServer(app);
+ const io = require('socket.io')(server,{
+ 
+   cors:{
+     origin:"*",
+    //  methods: ["GET", "POST"]
+   }
+ });
+
+// var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+  ? 'pipe ' + addr
+  : 'port ' + addr.port;
+  console.log("listeneing on port............"+JSON.stringify(server.address()));
+  console.log('my socket server is running!!!!!!!!!')
+  debug('Listening on ' + bind);
+}
+
+const addUser = async (userId, socketId) => {
+  
+  let db = await conn;
+  let insert = {
+    user_id   :  userId.toString(),
+    socket_id :  socketId
+  }
+
+  let where = {user_id : userId.toString()};
+  db.collection('online_users').updateOne(where, {$set: insert}, {upsert: true}, async(err, result)=>{
+
+    if(err){
+
+    }else{
+      await result;
+      console.log('new user is added!')
+    }
+  })
+};
+
+const removeUser = async(socketId) => {
+  let db = await conn
+  db.collection('online_users').deleteOne({socket_id : socketId}, async (err, result) => {
+    if(err){
+
+      console.log('Data Base Error')
+    }else{
+      await result;
+      console.log('user is deleted with socket id: ', socketId)
+    }
+  })  
+};
+
+const getUser = async(userId) => {
+  
+  let getUsercheck = {
+
+    user_id   :  userId
+  } 
+  let db = await conn
+  let user = await db.collection('online_users').find(getUsercheck).toArray()
+
+  console.log(user)
+  return user
+};
+
+
+const getOnlineUserList = async() => {
+  
+  let db    = await conn
+  let users = await db.collection('online_users').find({}).toArray()
+  return users
+}
+
+const getId = async(chatId) => {
+  let db    = await conn
+  let chatData = await db.collection('chat').find( { _id : new objectId( (chatId.toString() ) ) }).toArray()
+  return chatData
+}
+
+io.on("connection", async(socket) => {
+  socket.on("addUser", async (userId) => {
+    const user = await getOnlineUserList();   
+    await addUser(userId, socket.id);
+    io.emit("getUsers", user);
+  });
+
+
+  socket.on("sendOffer", async (data) => {
+
+    let db   =  await conn;
+    let chat_id = '';
+    let order_id = data.orderId;
+    let sender_id =  data.senderId
+
+    let createdChat  = {
+
+      order_id      :  data.orderId,
+      sender_id     :  data.senderId,
+      reciver_id    :  data.receiverId,
+      time          :  new Date(),
+    }
+
+    console.log('sender admin_id', data.senderId);
+    console.log('reciver admin_id', data.receiverId)
+
+
+    await db.collection('orders').updateOne({ '_id' :  new objectId(order_id.toString()) }, {$push: {offer_sender_account_ids : sender_id}}  );
+
+    let check = {
+
+      order_id      :  data.orderId,
+      sender_id     :  data.senderId,
+      reciver_id    :  data.receiverId,
+    }
+
+    
+    let count = await db.collection('chat').find(check).toArray()
+
+    if(count.length > 0){
+
+      chat_id  = count[0]['_id'].toString()
+    }else{
+
+      let getId =  await db.collection('chat').insertOne(createdChat);
+      chat_id   =  await getId.insertedId
+    }
+
+    io.emit("createChat", chat_id);
+  });
+
+  //send and get message
+  socket.on("sendMessage", async (data) => {
+    console.log('message status:    =>>>>>>....',   data.status)
+    let chatData = await getId(data.chat_id)
+    let chatForwardId = ''
+    if(chatData[0]['sender_id'] == (data.admin_id.toString()) ){
+      
+      chatForwardId = chatData[0]['reciver_id']
+    }else if ( chatData[0]['reciver_id'] == (data.admin_id.toString() ) ){
+
+      chatForwardId = chatData[0]['sender_id']
+    }
+  
+    console.log('chat forward id is ======>>>>>>>> ', chatForwardId)
+    const user = await getUser(chatForwardId); 
+
+    let chatId  = data.chat_id;
+    let senderId = data.admin_id;
+    let message  = data.text;
+    let sender_status  = data.sender_status;
+
+    let db = await conn;
+    db.collection('chat_messages').insertOne( {sender_id : senderId, "currentMessage" : message , time : new Date(),  chat_id : chatId, is_read: false, sender : sender_status}, async(err, response) => { 
+      if(err){
+
+        console.log('dataBase Error');
+      }else{
+
+        await response;
+        console.log('Your message is saved in database')
+      }
+    })
+
+    if(sender_status === 'buyer' || sender_status === 'traveler'){
+
+    }else{
+      
+    }
+
+    if(user.length > 0 ){
+
+      socket.to(user[0].socket_id).emit("getMessage", {
+        senderId,
+        message,
+        chatId 
+      });
+    }else{
+
+      if(data.text.location){
+
+        var SendMessage = 'New location'; 
+      }else if(data.text.image){
+
+        var SendMessage = 'New image'; 
+      }else{
+
+        var SendMessage = data.text.text;
+      }
+
+      axios.post('http://3.120.159.133/flighteno-services/index.php/Rest_calls/chatMessageSendNotification', {
+        traveler_admin_id   : chatForwardId,
+        sender_admin_id     : senderId,
+        order_id            : data.order_id,
+        status              : data.status,     
+        message             : SendMessage,
+          headers: { 
+            'cache-control': 'no-cache',
+            'Content-Type':  'application/json',
+          }
+        })
+      .then(function (response) {
+        console.log('This user was not online we have send the Notification!!');
+      })
+      .catch(function (error) {
+        console.log(error);
+      });
+    }
+  });
+
+  //when disconnect
+  socket.on("disconnect", async() => {;
+    await removeUser(socket.id);
+    const user = await getOnlineUserList();   
+    io.emit("getUsers", user);
+  });
+});
