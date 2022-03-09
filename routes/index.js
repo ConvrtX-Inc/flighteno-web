@@ -7,7 +7,7 @@ var conn          =   require("../dataBaseConnection/connection");
 var helper        =   require('../helpers/common_helpers');
 // const  fetch      =   require('node-fetch'); 
 const Stripe      =   require('stripe');
-const stripe      =   Stripe('sk_test_51Jbh0xES5y6t2EWhBXW6uiNciYBvFwBa1P6j0kVMODnPdljX5FSVgdFZIVBLNuTo93dKf7G7fexdWgfI6FlIUs8n00f4ZwlI63');
+const stripe      =   Stripe('sk_test_51KGIyoLmb7oqKCIEgTg3Jjh0ClljaXRRYDn9bPrUTmZdZXDafXvbbCsqxG60e6HQdhaUlvNIMymqa67Ke4HWK5ur00ycA8MZFj');
 /* GET home page. */
 router.get('/', function(req, res, next) {
 
@@ -101,25 +101,25 @@ console.log('user_id ========>>>>>>>>>', user_id)
 console.log('offerId ========>>>>>>>>>', offerId)
 
   let db    = await conn;
-  let count = await db.collection('users').find({_id : new objectId(user_id), customer_id : {'$exists' : true} }).toArray();
+  let userDetails = await db.collection('users').findOne({ _id: new objectId(user_id), customer_id: { '$exists': true } });
 
   let customer_id = '';
-  if(count.length > 0){
+  if(userDetails){
 
-    customer_id =  count[0]['customer_id']
+    customer_id =  userDetails['customer_id']
 
   }else{
 
-    let user = await db.collection('users').find({_id : new objectId(user_id)}).toArray();
+    let user = await db.collection('users').findOne({ _id: new objectId(user_id) });
 
-    console.log('user==========>>>', user[0]['email_address'])
+    console.log('user==========>>>', user['email_address'])
 
     const customer = await stripe.customers.create({
-      email:    user[0]['email_address'],
-      name:     user[0]['full_name'],
-      phone:    user[0]['phone_number'],
+      email:    user['email_address'],
+      name:     user['full_name'],
+      phone:    user['phone_number'],
       metadata: {
-       'flighteno_admin_id' : user[0]['_id'].toString(),
+       'flighteno_admin_id' : user['_id'].toString(),
       }
     });
     customer_id = customer.id;
@@ -128,10 +128,10 @@ console.log('offerId ========>>>>>>>>>', offerId)
 
   }
 
-  let offer = await db.collection('accepted_offers').find({_id : new objectId(offerId), status : 'new' }).toArray();
-  if(offer.length > 0){
+  let offer = await db.collection('accepted_offers').findOne({ _id: new objectId(offerId), status: 'new' });
+  if(offer){
 
-    const amount = offer[0]['total'] * 100; 
+    const amount = offer['total'] * 100; 
     var customer = await stripe.customers.retrieve(customer_id);
     if(customer != null){
 
@@ -148,7 +148,8 @@ console.log('offerId ========>>>>>>>>>', offerId)
         description: offerId,
         metadata: {
           'fligteno_admin_id' :  user_id,
-        }
+        },
+        payment_method: req.query.cardId,
       });
 
       var responseArray = {
@@ -156,7 +157,8 @@ console.log('offerId ========>>>>>>>>>', offerId)
         'type'   : 200,
         paymentIntent: paymentIntent.client_secret,
         ephemeralKey: ephemeralKey.secret,
-        customer: customer.id
+        customer: customer.id,
+        paymentIntentId: paymentIntent.id,
       };
       res.status(200).send(responseArray);
     }
@@ -170,3 +172,38 @@ console.log('offerId ========>>>>>>>>>', offerId)
   }
 });
 
+
+router.post('/set-customer-id', async (req, res) => {
+  let db = await conn;
+
+  let user_id = req.body.admin_id;
+  console.log("user id", user_id)
+  let user = await db.collection('users').findOne({ _id: new objectId(user_id) });
+
+
+  if (user) {
+    console.log('user==========>>>', user['email_address']);
+
+    const customer = await stripe.customers.create({
+      email: user['email_address'],
+      name: user['full_name'],
+      phone: user['phone_number'],
+      metadata: {
+        'flighteno_admin_id': user['_id'].toString(),
+      }
+    });
+    customer_id = customer.id;
+    await db.collection('users').updateOne({ _id: new objectId(user_id) }, { $set: { customer_id: customer_id } });
+    var response = {
+      'status': 'Customer Id Updated!',
+      'type': 200,
+      customer: customer.id
+    };
+    res.status(200).send(response)
+  }else{
+    res.status(404).send({
+      'message':'User Not Found'
+    });
+  }
+
+});
